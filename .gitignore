@@ -1,0 +1,34 @@
+# Secrets — never commit
+secrets.env
+.env
+*.pem
+credentials*.json
+
+# Python
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+
+# Local Chrome / Playwright profiles
+.browser-profile/
+.chrome-attach-profile/
+.playwright/
+
+# Runtime / local data
+answers_cache.json
+answers_cache.tmp
+*.log
+
+# IDE / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Misc
+cd/
+*.tmp

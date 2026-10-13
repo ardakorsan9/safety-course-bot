@@ -1,0 +1,87 @@
+# Basit Moodle lesson botu (ole.unibz.it)
+
+attach_to_chrome: true
+cdp_url: "http://127.0.0.1:9222"
+attach_goto_url: false
+confirm_before_start: true
+headless: false
+slow_mo_ms: 80
+
+# "spend at least 24 minutes" → 25 dk
+wait_extra_minutes: 1
+wait_scale: 1.0
+# Test için: run.bat ... 0.01
+check_nav_during_wait_every_sec: 45
+
+spend_patterns:
+  - "(?:spend\\s+(?:at\\s+least\\s+)?)(?P<value>\\d+(?:[.,]\\d+)?)\\s*(?P<unit>minutes?|mins?)"
+  - "(?:at\\s+least|minimum)\\s+(?P<value>\\d+(?:[.,]\\d+)?)\\s*(?P<unit>minutes?|mins?)"
+  - "(?P<value>\\d+(?:[.,]\\d+)?)\\s*(?P<unit>minutes?|mins?)\\s*(?:on\\s+this\\s+page)?"
+
+# Sol ders menüsü (Moodle üst menü DEĞİL)
+sidebar_selectors:
+  - "#courseindex"
+  - ".courseindex"
+  - "[data-region='courseindex']"
+  - ".course-content-list"
+  - "#region-main .menu"
+  - ".lesson-menu"
+  - ".activity-navigation"
+  - "aside.secondary-navigation"
+  - ".secondary-navigation"
+  - "[class*='courseindex']"
+  - "[class*='tableofcontents']"
+
+next_labels:
+  - "Next page"
+  - "Next"
+  - "Continue"
+
+end_labels:
+  - "End of lesson"
+  - "End"
+  - "Finish"
+
+# Quiz giriş (Next değil!)
+attempt_labels:
+  - "Attempt quiz"
+  - "Re-attempt quiz"
+  - "Continue your attempt"
+  - "Start attempt"
+
+# Quiz sayfası ipuçları (yanlış tetiklenmesin)
+quiz_name_hints:
+  - "quiz"
+  - "Quiz"
+
+submit_labels:
+  - "Submit"
+  - "Check"
+  - "Finish attempt"
+  - "Submit all and finish"
+  - "Next page"
+  - "Next"
+
+# Gemini
+use_llm: true
+llm_provider: gemini
+openai_base_url: "https://generativelanguage.googleapis.com/v1beta/openai"
+# Lite once (429 az); flash yedek
+openai_model: "gemini-3.5-flash-lite"
+quiz_openai_model: "gemini-3.5-flash-lite"
+solve_quizzes: true
+
+after_click_wait_ms: 1600
+max_steps: 5000
+# Doğru cevap hafızası (soru metni → şık metni)
+answers_cache: "answers_cache.json"
+# Paralel çalışacak kurslar (her biri kendi sekmesinde). Tek kurs için birini sil.
+# Liste boşsa: açık sekmedeki kurs kullanılır.
+courses:
+  - "https://ole.unibz.it/course/view.php?id=13232"
+  - "https://ole.unibz.it/course/view.php?id=13250"
+course_url: ""
+max_stagnant_steps: 20
+reload_if_nav_missing: true
+nav_reload_tries: 4
+scroll_before_nav: true
