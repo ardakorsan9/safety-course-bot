@@ -17,7 +17,13 @@ Attaches to your open Chrome (CDP port **9222**), walks lessons (wait + Next/End
 - Windows
 - Google Chrome
 - Python 3.11+
-- Gemini API key ([Google AI Studio](https://aistudio.google.com/apikey))
+- **Gemini API key — required for quizzes** ([Google AI Studio](https://aistudio.google.com/apikey))
+
+### Why the API key is required
+
+Lessons (timers, Next/End) work without AI. **Quizzes do not pass reliably without a Gemini key.**
+
+Without a key the bot has no correct answers for new questions, so it cannot meet the passing grade. A free Gemini API key is enough; put it in `secrets.env` (never commit that file).
 
 ## Setup
 
@@ -31,7 +37,7 @@ Copy secrets:
 copy secrets.env.example secrets.env
 ```
 
-Edit `secrets.env` and set:
+Edit `secrets.env` and set your key (**required** to pass quizzes):
 
 ```
 GEMINI_API_KEY=your_key_here
