@@ -3,7 +3,7 @@ setlocal EnableExtensions
 cd /d "%~dp0"
 
 echo ========================================
-echo  BOT v5.2-parallel  (iki kurs, iki sekme, ayni anda)
+echo  BOT v5.4-afk  (kendini toparlar + paralel kurs)
 echo  Once 1_chrome_ac.bat, giris yap, kursu ac
 echo ========================================
 echo.

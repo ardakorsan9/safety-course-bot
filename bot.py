@@ -42,7 +42,7 @@ from browser import (
 from lesson import LessonRunner, all_done, completion_items
 from quiz import AnswerCache, QuizRunner, open_cache
 
-VERSION = "v5.2-parallel"
+VERSION = "v5.4-afk"
 
 
 def route(url: str) -> str:
@@ -170,7 +170,25 @@ class Bot:
         self.course_url: str | None = course_url or cfg.get("course_url") or None
         self.last_key = ""
         self.repeat = 0
+        self.key_since = time.time()
         self.locked_waits = 0
+        self.empty_scans = 0
+        self.done_confirmed = False
+        self.result = "TAMAMLANDI"
+
+    def heal(self, page: Page, why: str) -> None:
+        """Takılma çözümü: önce yenile, olmazsa kurs ana sayfası."""
+        log(f"  [WATCHDOG] {why}")
+        if self.repeat >= 12 and self.course_url:
+            goto(page, self.course_url)
+            self.repeat = 0
+        else:
+            try:
+                page.reload(wait_until="domcontentloaded", timeout=60000)
+            except Exception:
+                pass
+            settle(page, 1500)
+        self.key_since = time.time()
 
     def go_next(self, page: Page, why: str) -> None:
         # 1) Sol menü: ilk tamamlanmamış + kilitsiz (sıralı kural)
@@ -205,19 +223,18 @@ class Bot:
                 self.course_url = cu
 
         key = f"{state}|{url}"
-        self.repeat = self.repeat + 1 if key == self.last_key else 0
-        self.last_key = key
-        if self.repeat == 6:
-            log("  Aynı sayfada takıldı — yenileniyor")
-            try:
-                page.reload(wait_until="domcontentloaded", timeout=60000)
-            except Exception:
-                pass
-            settle(page, 1500)
-            return True
-        if self.repeat >= 12:
-            pause("  İlerleyemiyorum. Sayfayı elle düzelt, ENTER ile devam…")
+        if key == self.last_key:
+            self.repeat += 1
+        else:
             self.repeat = 0
+            self.key_since = time.time()
+        self.last_key = key
+        stall_s = float(self.cfg.get("watchdog_seconds") or 120)
+        if self.repeat >= 12:
+            self.heal(page, "12 adımdır aynı sayfa — kurs ana sayfasına dönülüyor")
+            return True
+        if self.repeat == 6 or (self.repeat > 0 and time.time() - self.key_since > stall_s):
+            self.heal(page, f"aynı sayfada ilerleme yok ({int(time.time() - self.key_since)} sn) — yenileniyor")
             return True
 
         if state == "LESSON":
@@ -229,6 +246,7 @@ class Bot:
                 self.go_next(page, "Ders bitti")
             elif r == "waited":
                 self.repeat = 0
+                self.key_since = time.time()
             return True
 
         if state == "QUIZ_VIEW":
@@ -236,7 +254,9 @@ class Bot:
             if r == "passed":
                 self.go_next(page, "Quiz geçildi")
             elif r == "blocked":
-                pause("  Deneme hakkı bitti. Elle bak, ENTER…")
+                log("  Deneme hakkı bitti ve geçilemedi — bu kurs için yapılabilecek bir şey yok")
+                self.result = "DENEME HAKKI BİTTİ (elle bakılmalı)"
+                return False
             elif r == "unavailable":
                 if self.course_url:
                     goto(page, self.course_url)
@@ -278,28 +298,41 @@ class Bot:
         if state == "COURSE":
             href, st = pick_activity(page)
             if href:
-                self.locked_waits = 0
+                self.locked_waits = self.empty_scans = 0
+                self.done_confirmed = False
                 goto(page, href)
                 return True
             log(f"  Aktivite özeti [{st['src']}]: toplam {st['total']}, yeşil {st['done']}, kilitli {st['locked']}")
-            if st["total"] and st["done"] == st["total"]:
-                log("  Tüm aktiviteler yeşil — KURS BİTTİ")
-                return False
-            if st["total"] == 0:
-                pause("  Aktivite listesi okunamadı. Sol menüyü aç / sayfayı yenile, ENTER…")
-                return True
-            self.locked_waits += 1
-            if self.locked_waits <= 5:
-                log("  Açık aktivite yok, kilitliler var — kilidin açılması bekleniyor (10 sn, yenile)")
-                page.wait_for_timeout(10000)
+
+            def reload_wait(ms: int) -> None:
                 try:
                     page.reload(wait_until="domcontentloaded", timeout=60000)
                 except Exception:
                     pass
-                settle(page, 1500)
+                settle(page, ms)
+                self.key_since = time.time()
+
+            if st["total"] and st["done"] == st["total"]:
+                if not self.done_confirmed:
+                    log("  Hepsi yeşil görünüyor — emin olmak için yenilenip tekrar taranacak")
+                    self.done_confirmed = True
+                    reload_wait(3000)
+                    return True
+                log("  Tüm aktiviteler yeşil (2. tarama) — KURS BİTTİ")
+                return False
+            self.done_confirmed = False
+
+            if st["total"] == 0:
+                self.empty_scans += 1
+                log(f"  Aktivite listesi okunamadı ({self.empty_scans}. kez) — yenileniyor")
+                reload_wait(3000 if self.empty_scans < 3 else 10000)
                 return True
-            pause("  Kilitler açılmadı. Elle kontrol et, ENTER ile devam…")
-            self.locked_waits = 0
+
+            self.locked_waits += 1
+            wait_ms = 10000 if self.locked_waits <= 5 else 60000
+            log(f"  Açık aktivite yok, {st['locked']} kilitli — {wait_ms // 1000} sn bekleyip yenileniyor")
+            page.wait_for_timeout(wait_ms)
+            reload_wait(1500)
             return True
 
         # HOME / OTHER
@@ -318,48 +351,58 @@ def course_id_of(url: str) -> str:
 def run_course(cfg: dict, cdp: str, cache: AnswerCache, course_url: str | None, label: str) -> str:
     """Tek kurs döngüsü. Paralelde her kurs kendi iş parçacığında, kendi CDP bağlantısı ve sekmesiyle."""
     set_log_prefix(f"[{label}] " if label else "")
-    result = "durdu"
-    with sync_playwright() as pw:
-        try:
-            _, context = connect(pw, cdp)
-        except Exception as e:
-            log(f"Chrome'a bağlanamadı ({e}). Önce 1_chrome_ac.bat")
-            return "bağlantı yok"
+    result = "durduruldu"
+    cid = course_id_of(course_url) if course_url else ""
+    bot = Bot(cfg, cache, course_url)
 
-        cid = course_id_of(course_url) if course_url else ""
-
-        def get_page() -> Page | None:
-            if not cid:
-                return pick_page(context)
-            p = find_course_page(context, cid)
-            if p:
-                return p
-            log(f"  Kurs {cid} için sekme yok — yeni sekme açılıyor")
-            p = context.new_page()
-            goto(p, course_url)
+    def get_page(context) -> Page | None:
+        if not cid:
+            return pick_page(context)
+        p = find_course_page(context, cid)
+        if p:
             return p
+        log(f"  Kurs {cid} için sekme yok — yeni sekme açılıyor")
+        p = context.new_page()
+        goto(p, course_url)
+        return p
 
-        bot = Bot(cfg, cache, course_url)
-        page = get_page()
-        if page is not None:
-            log(f"Sekme: {page.url}")
-        try:
-            for _ in range(int(cfg.get("max_steps") or 5000)):
+    # AFK: hata, sekme kapanması veya Chrome bağlantı kopması döngüyü bitirmez
+    with sync_playwright() as pw:
+        browser = context = page = None
+        errors = 0
+        while not STOP.is_set():
+            try:
+                if browser is None or not browser.is_connected():
+                    browser, context = connect(pw, cdp)
+                    page = None
+                    log("Chrome'a bağlandı")
+                if page is None or page.is_closed():
+                    page = get_page(context)
+                    if page is None:
+                        log("  Açık sekme yok — 10 sn sonra tekrar")
+                        STOP.wait(10)
+                        continue
+                    log(f"Sekme: {page.url}")
+                if not bot.step(page):
+                    result = bot.result
+                    break
+                errors = 0
+            except Exception as e:
                 if STOP.is_set():
                     break
-                if page is None or page.is_closed():
-                    page = get_page()
-                    if page is None:
-                        log("Açık sekme yok.")
-                        break
-                if not bot.step(page):
-                    result = "TAMAMLANDI"
-                    break
-        except Exception as e:
-            if not STOP.is_set():
-                traceback.print_exc()
-                log(f"HATA: {e}")
-                result = f"hata: {e}"
+                errors += 1
+                log(f"  HATA ({errors}): {type(e).__name__}: {str(e).splitlines()[0][:200]}")
+                if errors in (1, 10):
+                    traceback.print_exc()
+                STOP.wait(5 if errors < 5 else 30)
+                try:
+                    if browser is not None and not browser.is_connected():
+                        log("  Chrome bağlantısı koptu — yeniden bağlanılacak")
+                        browser = None
+                    elif page is not None and not page.is_closed():
+                        page.reload(wait_until="domcontentloaded", timeout=60000)
+                except Exception:
+                    pass  # sonraki turda bağlantı/sekme yeniden kontrol edilir
     log(f"Kurs döngüsü bitti: {result}")
     return result
 

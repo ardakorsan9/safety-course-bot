@@ -1,4 +1,8 @@
-"""Lesson / genel aktivite: süre bekle → Next → End. Sol menü kullanılmaz."""
+"""Lesson / genel aktivite: süre bekle → ilerleme butonu. Sol menü kullanılmaz.
+
+Moodle branch sayfalarında buton metni 'Next' olmayabilir; sonraki konu adı yazar
+(örn. \"Employer's obligations\"). Home asla basılmaz.
+"""
 from __future__ import annotations
 
 import re
@@ -6,12 +10,87 @@ import time
 
 from playwright.sync_api import Page
 
-from browser import STOP, body_text, click_text, cmid_from_page, is_parallel, log, settle
+from browser import STOP, body_text, click_text, cmid_from_page, is_parallel, keep_alive, log, settle
 
 NEXT_PATTERNS = [r"^next page\s*[»›>]*$", r"^next\s*[»›>]*$", r"^continue\s*[»›>]*$"]
 END_PATTERNS = [r"^end of lesson$", r"^end$", r"^finish$"]
 STATUS_RE = re.compile(r"^\s*(Done|To do|Todo|Failed)\s*:\s*(.+?)\s*$", re.I | re.M)
 SPEND_RE = re.compile(r"spend\s+at\s+least\s+(\d+(?:[.,]\d+)?)\s*(minutes?|mins?|hours?)", re.I)
+
+# Branch / Content / klasik Next — Home/Back yasak
+_LESSON_NAV_JS = r"""() => {
+  const forbid = /^(home|back|previous|previous page|cancel|log ?out|dashboard|contents?)$/i;
+  const classic = /^(next page|next|continue|end of lesson|end|finish)\b/i;
+  const visible = (el) => {
+    if (!el || el.disabled) return false;
+    const st = getComputedStyle(el);
+    if (st.display === 'none' || st.visibility === 'hidden' || st.opacity === '0') return false;
+    const r = el.getBoundingClientRect();
+    return r.width >= 2 && r.height >= 2;
+  };
+  const label = (el) => (el.value || el.innerText || el.getAttribute('aria-label') || '').replace(/\s+/g, ' ').trim();
+  const click = (el) => {
+    if (!el) return null;
+    const t = label(el);
+    if (!t || forbid.test(t)) return null;
+    el.scrollIntoView({block: 'center'});
+    el.click();
+    return t;
+  };
+  const preferContinue = (root, sel) => {
+    if (!root) return null;
+    const els = Array.from(root.querySelectorAll(sel)).filter(visible);
+    const cont = els.find(e => /^continue\b/i.test(label(e)));
+    if (cont) return cont;
+    const next = els.find(e => classic.test(label(e)) && !forbid.test(label(e)));
+    if (next) return next;
+    // Konu adlı branch butonu (Home değil)
+    for (const el of els) {
+      const t = label(el);
+      if (t && !forbid.test(t)) return el;
+    }
+    return null;
+  };
+
+  // a) Branch / content containers
+  for (const boxSel of ['.branchbuttoncontainer', '.lessonbutton', '.branchflag', '.lesson-nav', '.continuebutton']) {
+    for (const box of document.querySelectorAll(boxSel)) {
+      const el = preferContinue(box, 'input[type="submit"], input[type="button"], button, a.btn, a');
+      const t = click(el);
+      if (t) return { via: boxSel, text: t };
+    }
+  }
+
+  // b) #region-main / main form submit (branch konu adı burada da olabilir)
+  const main = document.querySelector('#region-main, [role="main"], #region-main-box') || document.body;
+  for (const form of main.querySelectorAll('form')) {
+    const el = preferContinue(form, 'input[type="submit"], button[type="submit"], button.btn, a.btn');
+    const t = click(el);
+    if (t) return { via: 'form', text: t };
+  }
+
+  // c) Klasik metin butonları (Continue önce, Home asla)
+  const classicEl = preferContinue(main, 'input[type="submit"], input[type="button"], button, a.btn');
+  if (classicEl && classic.test(label(classicEl))) {
+    const t = click(classicEl);
+    if (t) return { via: 'classic', text: t };
+  }
+
+  // d) Ana alanda tek ileri aday (konu adı); Home hariç, mümkünse en alttaki
+  const cands = Array.from(main.querySelectorAll('input[type="submit"], button[type="submit"], a.btn, button.btn'))
+    .filter(visible)
+    .filter(el => {
+      const t = label(el);
+      return t && !forbid.test(t) && t.length < 80;
+    });
+  if (cands.length) {
+    // Continue/Next tercih; yoksa sayfada en aşağıdakini al (Home üstte kalır)
+    const prefer = cands.find(e => classic.test(label(e))) || cands[cands.length - 1];
+    const t = click(prefer);
+    if (t) return { via: 'fallback', text: t };
+  }
+  return null;
+}"""
 
 
 def completion_items(page: Page) -> list[tuple[str, str]]:
@@ -48,10 +127,13 @@ def _spend_minutes(s: str) -> float | None:
     return v * 60 if m.group(2).lower().startswith("hour") else v
 
 
-def countdown(seconds: float) -> None:
-    """Paralelde iki kursun sayacı karışmasın diye her dakika ayrı satır yazar."""
+def countdown(seconds: float, page: Page | None = None) -> None:
+    """Paralelde iki kursun sayacı karışmasın diye her dakika ayrı satır yazar.
+    page verilirse 15 sn'de bir keep-alive scroll yapılır."""
     rem = int(max(0, seconds))
     while rem > 0 and not STOP.is_set():
+        if page is not None and rem % 15 == 0:
+            keep_alive(page)
         h, r = divmod(rem, 3600)
         mi, s = divmod(r, 60)
         if is_parallel():
@@ -104,7 +186,7 @@ class LessonRunner:
         else:
             log("  Süre şartı 5 ek turdan sonra hâlâ bitmedi — devam ediliyor")
             return False
-        countdown(secs)
+        countdown(secs, page)
         self.waited[cmid] = rounds + 1
         try:
             page.reload(wait_until="domcontentloaded", timeout=120000)
@@ -112,6 +194,26 @@ class LessonRunner:
             pass
         settle(page, 1000)
         return True
+
+    def click_progress(self, page: Page) -> str | None:
+        """Branch konu adı / Continue / Next / End — Home asla."""
+        try:
+            hit = page.evaluate(_LESSON_NAV_JS)
+        except Exception as e:
+            log(f"  Lesson nav hata: {e}")
+            hit = None
+        if hit and hit.get("text"):
+            log(f"  → {hit['text']}  [{hit.get('via', '?')}]")
+            settle(page, self.after_ms)
+            return str(hit["text"])
+        # Son çare: klasik metin
+        for pats in (NEXT_PATTERNS, END_PATTERNS):
+            t = click_text(page, pats, "#region-main")
+            if t:
+                log(f"  → {t}")
+                settle(page, self.after_ms)
+                return t
+        return None
 
     def step(self, page: Page) -> str:
         """Tek aksiyon. Dönüş: 'waited' | 'clicked' | 'done'."""
@@ -126,16 +228,6 @@ class LessonRunner:
                 settle(page, self.after_ms)
                 return "clicked"
 
-        hit = click_text(page, NEXT_PATTERNS, "#region-main")
-        if hit:
-            log(f"  → {hit}")
-            settle(page, self.after_ms)
+        if self.click_progress(page):
             return "clicked"
-
-        hit = click_text(page, END_PATTERNS, "#region-main")
-        if hit:
-            log(f"  → {hit}")
-            settle(page, self.after_ms)
-            return "clicked"
-
         return "done"

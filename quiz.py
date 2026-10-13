@@ -257,12 +257,18 @@ def _gemini_answers(cfg: dict, qs: list[dict], cache: AnswerCache) -> dict[int, 
     }
 
     data = None
+    deadline = time.time() + float(cfg.get("gemini_max_seconds") or 120)
     for model in models:
+        if time.time() > deadline:
+            log("  Gemini süre sınırı doldu — tahminle devam")
+            break
         url = (
             "https://generativelanguage.googleapis.com/v1beta/models/"
             f"{model}:generateContent?key={urllib.parse.quote(key)}"
         )
         for attempt in range(3):
+            if time.time() > deadline:
+                break
             log(f"  Gemini: {model} (deneme {attempt + 1})")
             req = urllib.request.Request(
                 url,
@@ -282,7 +288,7 @@ def _gemini_answers(cfg: dict, qs: list[dict], cache: AnswerCache) -> dict[int, 
                 log(f"  Gemini HTTP {e.code}" + (f" — {wait}s bekle" if wait else ""))
                 if not wait:
                     break
-                time.sleep(wait)
+                time.sleep(max(0, min(wait, deadline - time.time())))
             except Exception as e:
                 log(f"  Gemini hata: {e}")
                 time.sleep(3)
@@ -415,7 +421,12 @@ class QuizRunner:
 
         if need_ai:
             log(f"  {len(need_ai)} soru hafızada yok → Gemini")
-            for qi, texts in gemini_answers(self.cfg, need_ai, self.cache).items():
+            try:
+                ai = gemini_answers(self.cfg, need_ai, self.cache)
+            except Exception as e:
+                log(f"  Gemini beklenmeyen hata ({e}) — tahminle devam")
+                ai = {}
+            for qi, texts in ai.items():
                 q = next(x for x in need_ai if x["qi"] == qi)
                 ids = match_texts(q, texts)
                 if ids:
@@ -492,7 +503,8 @@ class QuizRunner:
                       if (!m) return null;
                       const btn = m.querySelector('[data-action="save"]') ||
                         Array.from(m.querySelectorAll('button, input[type=submit]'))
-                          .find(b => /submit all and finish/i.test(b.innerText || b.value || ''));
+                          .find(b => /submit all and finish/i.test(b.innerText || b.value || '')) ||
+                        m.querySelector('.btn-primary');
                       if (!btn) return null;
                       btn.click();
                       return (btn.innerText || btn.value || 'ok').trim();

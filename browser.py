@@ -74,6 +74,16 @@ def log(msg: str) -> None:
         print(msg, flush=True)
 
 
+def keep_alive(page: Page | None) -> None:
+    """Uzun beklemede sekme uyumasın: küçük scroll."""
+    if page is None:
+        return
+    try:
+        page.evaluate("() => { window.scrollBy(0, 1); window.scrollBy(0, -1); }")
+    except Exception:
+        pass
+
+
 def connect(pw: Playwright, cdp_url: str) -> tuple[Browser, BrowserContext]:
     browser = pw.chromium.connect_over_cdp(cdp_url)
     context = browser.contexts[0] if browser.contexts else browser.new_context()
